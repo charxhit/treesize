@@ -1,6 +1,10 @@
-[package]
-name = "treesize"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = [
+    "crates/app",
+    "crates/core",
+    "crates/cli",
+]
 
-[dependencies]
+# Use the new feature resolver for workspaces
+resolver = "2"
+

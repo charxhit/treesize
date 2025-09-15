@@ -1,0 +1,17 @@
+[package]
+name = "treesize-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = { version = "0.28", features = ["persistence"] }
+egui_extras = "0.28"
+egui_plot = "0.28"
+open = "5"
+trash = "5"
+anyhow = "1"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+rfd = "0.14"
+
+treesize-core = { path = "../core" }
