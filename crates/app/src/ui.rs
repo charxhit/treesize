@@ -225,6 +225,7 @@ fn draw_folder_tree(ui: &mut Ui, app: &AppState, tree: &Tree) -> FolderTreeActio
                 tree.root,
                 app.selected,
                 app.current_dir,
+                app.sort,
                 &mut actions,
             );
         });
@@ -237,10 +238,11 @@ fn render_folder_node(
     node_id: NodeId,
     selected: Option<NodeId>,
     current: Option<NodeId>,
+    sort: SortKey,
     actions: &mut FolderTreeActions,
 ) {
     ui.push_id(node_id.0, |ui| {
-        render_folder_node_contents(ui, tree, node_id, selected, current, actions);
+        render_folder_node_contents(ui, tree, node_id, selected, current, sort, actions);
     });
 }
 
@@ -250,6 +252,7 @@ fn render_folder_node_contents(
     node_id: NodeId,
     selected: Option<NodeId>,
     current: Option<NodeId>,
+    sort: SortKey,
     actions: &mut FolderTreeActions,
 ) {
     let node = &tree.nodes[node_id.0 as usize];
@@ -260,11 +263,22 @@ fn render_folder_node_contents(
     let id = ui.make_persistent_id(("folder_node", node_id.0));
     let state = CollapsingState::load_with_default_open(ui.ctx(), id, node.parent.is_none());
     let is_selected = selected == Some(node_id) || current == Some(node_id);
+    let mut delete_clicked = false;
+    let label_text = format!("{} ({})", node.name, human_bytes(node.size));
     let header = state.show_header(ui, |ui| {
-        ui.selectable_label(
-            is_selected,
-            format!("{} ({})", node.name, human_bytes(node.size)),
-        )
+        ui.horizontal(|ui| {
+            let response = ui.selectable_label(is_selected, label_text.clone());
+            ui.add_space(6.0);
+            if ui
+                .small_button("Del")
+                .on_hover_text("Delete this directory")
+                .clicked()
+            {
+                delete_clicked = true;
+            }
+            response
+        })
+        .inner
     });
     let (_toggle, header_inner, _) = header.body(|ui| {
         let mut dir_children = Vec::new();
@@ -277,14 +291,22 @@ fn render_folder_node_contents(
             }
         }
 
+        sort_node_ids(&mut dir_children, tree, sort);
+        sort_node_ids(&mut file_children, tree, sort);
+
         for child in dir_children {
-            render_folder_node(ui, tree, child, selected, current, actions);
+            render_folder_node(ui, tree, child, selected, current, sort, actions);
         }
 
         for child in file_children {
             render_file_entry(ui, tree, child, selected, actions);
         }
     });
+    if delete_clicked {
+        actions.select = Some(node_id);
+        actions.delete = Some(node_id);
+    }
+
     let response = header_inner.response;
 
     if response.clicked() {
@@ -328,6 +350,26 @@ fn render_file_entry(
             ui.close_menu();
         }
     });
+}
+
+fn sort_node_ids(nodes: &mut Vec<NodeId>, tree: &Tree, sort: SortKey) {
+    match sort {
+        SortKey::Size => nodes.sort_by(|a, b| {
+            tree.nodes[b.0 as usize]
+                .size
+                .cmp(&tree.nodes[a.0 as usize].size)
+        }),
+        SortKey::Name => nodes.sort_by(|a, b| {
+            tree.nodes[a.0 as usize]
+                .name
+                .cmp(&tree.nodes[b.0 as usize].name)
+        }),
+        SortKey::Count => nodes.sort_by(|a, b| {
+            tree.nodes[b.0 as usize]
+                .file_count
+                .cmp(&tree.nodes[a.0 as usize].file_count)
+        }),
+    }
 }
 
 fn collect_pie_slices(tree: &Tree, children: &[NodeId]) -> Vec<PieSlice> {
