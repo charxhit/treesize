@@ -84,10 +84,15 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
         } else {
             0.0
         };
+        let progress_label = if app.scan_rx.is_some() {
+            "Scanning..."
+        } else {
+            "Scan complete"
+        };
         ui.add(
             egui::ProgressBar::new(progress)
                 .show_percentage()
-                .text("Scanning..."),
+                .text(progress_label),
         );
 
         ui.separator();
@@ -522,18 +527,19 @@ fn draw_pie_chart(
     ui.horizontal(|ui| {
         let available_width = ui.available_width();
         let available_height = ui.available_height();
-        let mut chart_side = if available_width > legend_width + 140.0 {
+        let mut chart_side = if available_width > legend_width + 200.0 {
             (available_width - legend_width).min(available_height)
         } else {
             available_width.min(available_height)
         };
-        chart_side = chart_side.max(160.0);
+        chart_side = chart_side.max(220.0);
+        chart_side = chart_side.min(available_width - 20.0).max(200.0);
 
         let (chart_rect, response) =
             ui.allocate_exact_size(egui::vec2(chart_side, chart_side), Sense::click());
         let painter = ui.painter().with_clip_rect(chart_rect);
         let center = chart_rect.center();
-        let radius = (chart_rect.width().min(chart_rect.height()) / 2.0 - 14.0).max(0.0);
+        let radius = ((chart_rect.width().min(chart_rect.height()) / 2.0) - 14.0).max(0.0);
         let tau = std::f32::consts::TAU;
 
         let hovered_index = response
