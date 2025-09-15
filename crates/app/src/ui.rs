@@ -239,6 +239,19 @@ fn render_folder_node(
     current: Option<NodeId>,
     actions: &mut FolderTreeActions,
 ) {
+    ui.push_id(node_id.0, |ui| {
+        render_folder_node_contents(ui, tree, node_id, selected, current, actions);
+    });
+}
+
+fn render_folder_node_contents(
+    ui: &mut Ui,
+    tree: &Tree,
+    node_id: NodeId,
+    selected: Option<NodeId>,
+    current: Option<NodeId>,
+    actions: &mut FolderTreeActions,
+) {
     let node = &tree.nodes[node_id.0 as usize];
     if !matches!(node.kind, NodeKind::Dir) {
         return;
@@ -254,8 +267,22 @@ fn render_folder_node(
         )
     });
     let (_toggle, header_inner, _) = header.body(|ui| {
+        let mut dir_children = Vec::new();
+        let mut file_children = Vec::new();
         for &child in &node.children {
+            let child_node = &tree.nodes[child.0 as usize];
+            match child_node.kind {
+                NodeKind::Dir => dir_children.push(child),
+                NodeKind::File => file_children.push(child),
+            }
+        }
+
+        for child in dir_children {
             render_folder_node(ui, tree, child, selected, current, actions);
+        }
+
+        for child in file_children {
+            render_file_entry(ui, tree, child, selected, actions);
         }
     });
     let response = header_inner.response;
@@ -271,6 +298,30 @@ fn render_folder_node(
             actions.open = Some(node_id);
             ui.close_menu();
         }
+        if ui.button("Delete").clicked() {
+            actions.select = Some(node_id);
+            actions.delete = Some(node_id);
+            ui.close_menu();
+        }
+    });
+}
+
+fn render_file_entry(
+    ui: &mut Ui,
+    tree: &Tree,
+    node_id: NodeId,
+    selected: Option<NodeId>,
+    actions: &mut FolderTreeActions,
+) {
+    let node = &tree.nodes[node_id.0 as usize];
+    let label = format!("{} ({})", node.name, human_bytes(node.size));
+    let response = ui.selectable_label(selected == Some(node_id), label);
+
+    if response.clicked() {
+        actions.select = Some(node_id);
+    }
+
+    response.context_menu(|ui| {
         if ui.button("Delete").clicked() {
             actions.select = Some(node_id);
             actions.delete = Some(node_id);
