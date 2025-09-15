@@ -24,6 +24,7 @@ pub struct AppState {
     pub tree: Option<Tree>,
     pub current_dir: Option<NodeId>,
     pub selected: Option<NodeId>,
+    pub pending_delete: Option<NodeId>,
 }
 
 impl AppState {
@@ -40,6 +41,7 @@ impl AppState {
             tree: None,
             current_dir: None,
             selected: None,
+            pending_delete: None,
         }
     }
 
@@ -51,6 +53,7 @@ impl AppState {
         self.tree = None;
         self.current_dir = None;
         self.selected = None;
+        self.pending_delete = None;
         self.cancel.store(false, Ordering::Relaxed);
 
         let (tx, rx): (Sender<ScanMsg>, Receiver<ScanMsg>) = unbounded();
@@ -80,6 +83,11 @@ impl AppState {
         if let Some(tree) = &self.tree {
             self.current_dir = Some(tree.root);
         }
+    }
+
+    pub fn request_delete(&mut self, id: NodeId) {
+        self.selected = Some(id);
+        self.pending_delete = Some(id);
     }
 
     pub fn delete_selected_and_rescan(&mut self) {

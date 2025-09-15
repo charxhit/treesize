@@ -61,7 +61,9 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
                 app.navigate_up();
             }
             if app.selected.is_some() && ui.button("Delete Selected").clicked() {
-                app.delete_selected_and_rescan();
+                if let Some(id) = app.selected {
+                    app.request_delete(id);
+                }
             }
             ui.separator();
             if let Some(tree) = &app.tree {
@@ -146,6 +148,8 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
             }
         }
     });
+
+    show_delete_confirmation(ctx, app);
 }
 
 fn top_bar(ui: &mut Ui, app: &mut AppState) {
@@ -157,6 +161,11 @@ fn top_bar(ui: &mut Ui, app: &mut AppState) {
         }
         if ui.button("Cancel").clicked() {
             app.cancel_scan();
+        }
+        if app.selected.is_some() && ui.button("Delete Selected").clicked() {
+            if let Some(id) = app.selected {
+                app.request_delete(id);
+            }
         }
         ui.separator();
         ui.label("Sort by:");
@@ -369,6 +378,76 @@ fn sort_node_ids(nodes: &mut Vec<NodeId>, tree: &Tree, sort: SortKey) {
                 .file_count
                 .cmp(&tree.nodes[a.0 as usize].file_count)
         }),
+    }
+}
+
+fn show_delete_confirmation(ctx: &egui::Context, app: &mut AppState) {
+    let delete_id = match app.pending_delete {
+        Some(id) => id,
+        None => return,
+    };
+
+    let (path_display, item_label, item_kind, size_label) = app
+        .tree
+        .as_ref()
+        .and_then(|tree| tree.nodes.get(delete_id.0 as usize))
+        .map(|node| {
+            (
+                node.path.display().to_string(),
+                node.name.clone(),
+                node.kind.clone(),
+                human_bytes(node.size),
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                String::from("(unknown)"),
+                String::from("item"),
+                NodeKind::File,
+                String::new(),
+            )
+        });
+
+    let mut confirm = false;
+    let mut cancel = false;
+    let mut open = true;
+    egui::Window::new("Confirm Delete")
+        .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            let kind_text = match item_kind {
+                NodeKind::Dir => "folder",
+                NodeKind::File => "file",
+            };
+            ui.heading(format!("Delete {kind_text}?"));
+            ui.label(format!("Name: {item_label}"));
+            ui.label(format!("Path: {path_display}"));
+            if !size_label.is_empty() {
+                ui.label(format!("Size: {size_label}"));
+            }
+            ui.separator();
+            ui.label("This action cannot be undone.");
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+                if ui
+                    .add(egui::Button::new("Delete").fill(Color32::from_rgb(170, 50, 50)))
+                    .clicked()
+                {
+                    confirm = true;
+                }
+            });
+        });
+
+    if confirm {
+        app.delete_selected_and_rescan();
+        app.pending_delete = None;
+        ctx.request_repaint();
+    } else if cancel || !open {
+        app.pending_delete = None;
     }
 }
 
@@ -660,8 +739,7 @@ fn apply_pie_actions(app: &mut AppState, actions: PieActions) {
         app.current_dir = Some(id);
     }
     if let Some(id) = actions.delete {
-        app.selected = Some(id);
-        app.delete_selected_and_rescan();
+        app.request_delete(id);
     }
 }
 
@@ -673,7 +751,6 @@ fn apply_folder_actions(app: &mut AppState, actions: FolderTreeActions) {
         app.current_dir = Some(id);
     }
     if let Some(id) = actions.delete {
-        app.selected = Some(id);
-        app.delete_selected_and_rescan();
+        app.request_delete(id);
     }
 }
