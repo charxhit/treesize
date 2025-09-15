@@ -4,10 +4,16 @@ mod ui;
 use eframe::egui;
 use state::AppState;
 
-struct MyApp { state: AppState }
+struct MyApp {
+    state: AppState,
+}
 
 impl MyApp {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self { Self { state: AppState::new() } }
+    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        Self {
+            state: AppState::new(),
+        }
+    }
 }
 
 impl eframe::App for MyApp {

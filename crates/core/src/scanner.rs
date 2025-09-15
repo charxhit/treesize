@@ -1,15 +1,33 @@
 use crossbeam_channel::Sender;
 use ignore::{WalkBuilder, WalkState};
 use std::collections::HashMap;
-use std::{path::{Path, PathBuf}, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc}};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use crate::model::*;
 
 #[derive(Debug, Clone)]
 pub enum ScanMsg {
-    Progress { scanned: u64, discovered: u64, bytes: u128 },
-    DirDone { path: PathBuf, bytes: u128, files: u64, dirs: u64 },
-    File { path: PathBuf, bytes: u64 },
+    Progress {
+        scanned: u64,
+        discovered: u64,
+        bytes: u128,
+    },
+    DirDone {
+        path: PathBuf,
+        bytes: u128,
+        files: u64,
+        dirs: u64,
+    },
+    File {
+        path: PathBuf,
+        bytes: u64,
+    },
     Done(Tree),
     Error(String),
 }
@@ -20,7 +38,9 @@ pub struct Scanner {
 }
 
 impl Scanner {
-    pub fn new(cancel: Arc<AtomicBool>) -> Self { Self { cancel } }
+    pub fn new(cancel: Arc<AtomicBool>) -> Self {
+        Self { cancel }
+    }
 
     pub fn scan(&self, root: PathBuf, tx: Sender<ScanMsg>) {
         use parking_lot::Mutex;
@@ -36,7 +56,11 @@ impl Scanner {
         let files: Arc<Mutex<Vec<(PathBuf, u64)>>> = Arc::new(Mutex::new(Vec::with_capacity(4096)));
 
         let mut builder = WalkBuilder::new(&root);
-        builder.hidden(false).git_global(false).follow_links(false).threads(num_cpus::get());
+        builder
+            .hidden(false)
+            .git_global(false)
+            .follow_links(false)
+            .threads(num_cpus::get());
 
         let walker = builder.build_parallel();
         walker.run(|| {
@@ -68,7 +92,10 @@ impl Scanner {
                                             bytes: *b,
                                         });
                                     }
-                                    let _ = tx.send(ScanMsg::File { path: path.clone(), bytes: sz });
+                                    let _ = tx.send(ScanMsg::File {
+                                        path: path.clone(),
+                                        bytes: sz,
+                                    });
                                     files.lock().push((path, sz));
                                 }
                                 Err(_) => {
@@ -126,7 +153,11 @@ fn build_tree(root: &Path, files: Vec<(PathBuf, u64)>) -> Tree {
             Some(ensure_dir(parent, root, nodes, id_by_path))
         };
         let id = NodeId(nodes.len() as u64);
-        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or_else(|| path.as_os_str().to_str().unwrap_or("")).to_string();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_else(|| path.as_os_str().to_str().unwrap_or(""))
+            .to_string();
         nodes.push(TreeNode {
             id,
             parent: parent_id,
@@ -156,7 +187,11 @@ fn build_tree(root: &Path, files: Vec<(PathBuf, u64)>) -> Tree {
         let parent_dir = path.parent().unwrap_or(&root);
         let pid = ensure_dir(parent_dir, &root, &mut nodes, &mut id_by_path);
         let id = NodeId(nodes.len() as u64);
-        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
         nodes.push(TreeNode {
             id,
             parent: Some(pid),
@@ -168,7 +203,9 @@ fn build_tree(root: &Path, files: Vec<(PathBuf, u64)>) -> Tree {
             children: Vec::new(),
             modified: None,
         });
-        if let Some(p) = nodes.get_mut(pid.0 as usize) { p.children.push(id); }
+        if let Some(p) = nodes.get_mut(pid.0 as usize) {
+            p.children.push(id);
+        }
 
         // Propagate to ancestors
         let mut cur = Some(parent_dir.to_path_buf());
@@ -179,10 +216,15 @@ fn build_tree(root: &Path, files: Vec<(PathBuf, u64)>) -> Tree {
                     node.file_count = node.file_count.saturating_add(1);
                 }
             }
-            if dir == root { break; }
+            if dir == root {
+                break;
+            }
             cur = dir.parent().map(|p| p.to_path_buf());
         }
     }
 
-    Tree { root: root_id, nodes }
+    Tree {
+        root: root_id,
+        nodes,
+    }
 }

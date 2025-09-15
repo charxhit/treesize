@@ -2,9 +2,15 @@ use crate::model::*;
 
 pub fn to_csv(tree: &Tree, mut w: impl std::io::Write) -> csv::Result<()> {
     let mut writer = csv::Writer::from_writer(&mut w);
-    writer.write_record(["path", "name", "kind", "size", "files", "modified"]).ok();
+    writer
+        .write_record(["path", "name", "kind", "size", "files", "modified"])
+        .ok();
     for n in &tree.nodes {
-        let kind: String = match n.kind { crate::model::NodeKind::File => "file", crate::model::NodeKind::Dir => "dir" }.to_string();
+        let kind: String = match n.kind {
+            crate::model::NodeKind::File => "file",
+            crate::model::NodeKind::Dir => "dir",
+        }
+        .to_string();
         let modified: String = n.modified.map(|_| "some".to_string()).unwrap_or_default();
         writer.write_record([
             n.path.display().to_string(),

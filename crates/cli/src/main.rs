@@ -29,7 +29,15 @@ fn main() {
     let mut bytes = 0u128;
     while let Ok(msg) = rx.recv() {
         match msg {
-            ScanMsg::Progress { scanned, discovered: d, bytes: b } => { files = scanned; discovered = d; bytes = b; }
+            ScanMsg::Progress {
+                scanned,
+                discovered: d,
+                bytes: b,
+            } => {
+                files = scanned;
+                discovered = d;
+                bytes = b;
+            }
             ScanMsg::Done(tree) => {
                 if let Some(path) = args.json {
                     let json = treesize_core::export::to_json(&tree);
@@ -40,5 +48,10 @@ fn main() {
             _ => {}
         }
     }
-    println!("Scanned {} / {} files, {} bytes", files, discovered.max(files), bytes);
+    println!(
+        "Scanned {} / {} files, {} bytes",
+        files,
+        discovered.max(files),
+        bytes
+    );
 }
