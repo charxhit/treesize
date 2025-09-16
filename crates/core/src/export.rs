@@ -1,54 +1,141 @@
 use crate::model::*;
+use chrono::{DateTime, Local};
+use serde::Serialize;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::Path;
+use std::time::SystemTime;
+use thiserror::Error;
 
-pub fn to_csv(tree: &Tree, mut w: impl std::io::Write) -> csv::Result<()> {
-    let mut writer = csv::Writer::from_writer(&mut w);
-    writer
-        .write_record(["path", "name", "kind", "size", "files", "modified"])
-        .ok();
-    for n in &tree.nodes {
-        let kind: String = match n.kind {
-            crate::model::NodeKind::File => "file",
-            crate::model::NodeKind::Dir => "dir",
+#[derive(Debug, Error)]
+pub enum ExportError {
+    #[error("csv error: {0}")]
+    Csv(#[from] csv::Error),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("pdf error: {0}")]
+    Pdf(#[from] printpdf::Error),
+}
+
+#[derive(Serialize)]
+struct ExportRow {
+    path: String,
+    kind: &'static str,
+    size_bytes: u128,
+    files: u64,
+    folders: u64,
+    modified: String,
+}
+
+fn build_rows(tree: &Tree) -> Vec<ExportRow> {
+    let dir_counts = compute_dir_counts(tree);
+    tree.nodes
+        .iter()
+        .enumerate()
+        .map(|(idx, node)| {
+            let kind = match node.kind {
+                NodeKind::File => "file",
+                NodeKind::Dir => "dir",
+            };
+            let (files, dirs) = if matches!(node.kind, NodeKind::File) {
+                (0, 0)
+            } else {
+                (node.file_count, dir_counts[idx])
+            };
+            let modified = format_modified(node.modified);
+            ExportRow {
+                path: node.path.display().to_string(),
+                kind,
+                size_bytes: node.size,
+                files,
+                folders: dirs,
+                modified,
+            }
+        })
+        .collect()
+}
+
+fn compute_dir_counts(tree: &Tree) -> Vec<u64> {
+    let mut counts = vec![0; tree.nodes.len()];
+    for idx in (0..tree.nodes.len()).rev() {
+        if matches!(tree.nodes[idx].kind, NodeKind::Dir) {
+            let mut total = 0;
+            for &child in &tree.nodes[idx].children {
+                let cidx = child.0 as usize;
+                if matches!(tree.nodes[cidx].kind, NodeKind::Dir) {
+                    total += 1 + counts[cidx];
+                }
+            }
+            counts[idx] = total;
         }
-        .to_string();
-        let modified: String = n.modified.map(|_| "some".to_string()).unwrap_or_default();
+    }
+    counts
+}
+
+fn format_modified(modified: Option<std::time::SystemTime>) -> String {
+    modified
+        .map(|ts| {
+            DateTime::<Local>::from(ts)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| "".to_string())
+}
+
+pub fn export_csv(tree: &Tree, path: &Path) -> Result<(), ExportError> {
+    let rows = build_rows(tree);
+    let file = File::create(path)?;
+    let mut writer = csv::Writer::from_writer(BufWriter::new(file));
+    writer.write_record(["path", "kind", "size_bytes", "files", "folders", "modified"])?;
+    for row in rows {
         writer.write_record([
-            n.path.display().to_string(),
-            n.name.clone(),
-            kind,
-            n.size.to_string(),
-            n.file_count.to_string(),
-            modified,
+            row.path,
+            row.kind.to_string(),
+            row.size_bytes.to_string(),
+            row.files.to_string(),
+            row.folders.to_string(),
+            row.modified,
         ])?;
     }
     writer.flush()?;
     Ok(())
 }
 
-pub fn to_json(tree: &Tree) -> serde_json::Value {
-    serde_json::json!({
-        "root": tree.root.0,
-        "nodes": tree.nodes.iter().map(|n| serde_json::json!({
-            "id": n.id.0,
-            "parent": n.parent.as_ref().map(|p| p.0),
-            "path": n.path,
-            "name": n.name,
-            "kind": match n.kind { crate::model::NodeKind::File => "file", crate::model::NodeKind::Dir => "dir"},
-            "size": n.size,
-            "file_count": n.file_count,
-            "children": n.children.iter().map(|c| c.0).collect::<Vec<_>>()
-        })).collect::<Vec<_>>()
-    })
+pub fn export_json(tree: &Tree, path: &Path) -> Result<(), ExportError> {
+    let rows = build_rows(tree);
+    let file = File::create(path)?;
+    serde_json::to_writer_pretty(BufWriter::new(file), &rows)?;
+    Ok(())
 }
 
-pub fn to_pdf(_tree: &Tree, out: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn export_pdf(tree: &Tree, path: &Path) -> Result<(), ExportError> {
     use printpdf::*;
-    let (doc, page1, layer1) = PdfDocument::new("TreeSize Report", Mm(210.0), Mm(297.0), "Layer 1");
-    let layer = doc.get_page(page1).get_layer(layer1);
+    let rows = build_rows(tree);
+    let (doc, page, layer) = PdfDocument::new("TreeSize Export", Mm(210.0), Mm(297.0), "Layer 1");
     let font = doc.add_builtin_font(BuiltinFont::Helvetica)?;
-    layer.use_text("TreeSize Report", 14.0, Mm(15.0), Mm(280.0), &font);
-    let file = std::fs::File::create(out)?;
-    let mut buf = std::io::BufWriter::new(file);
+    let mut current_page = page;
+    let mut current_layer = doc.get_page(current_page).get_layer(layer);
+    let mut y = Mm(280.0);
+    current_layer.use_text("TreeSize Export", 14.0, Mm(10.0), y, &font);
+    y -= Mm(10.0);
+    let line_height = Mm(5.0);
+    for row in rows {
+        let line = format!(
+            "{} | {} | size={} | files={} | folders={} | {}",
+            row.path, row.kind, row.size_bytes, row.files, row.folders, row.modified
+        );
+        if y.0 < 20.0 {
+            let (new_page, new_layer) = doc.add_page(Mm(210.0), Mm(297.0), "Layer");
+            current_page = new_page;
+            current_layer = doc.get_page(current_page).get_layer(new_layer);
+            y = Mm(280.0);
+        }
+        current_layer.use_text(line, 6.0, Mm(10.0), y, &font);
+        y -= line_height;
+    }
+    let mut buf = BufWriter::new(File::create(path)?);
     doc.save(&mut buf)?;
     Ok(())
 }

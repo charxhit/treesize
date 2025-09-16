@@ -10,7 +10,7 @@ use treesize_core::human::human_bytes;
 use treesize_core::model::{NodeId, NodeKind, Tree, TreeNode};
 use treesize_core::scanner::ScanMsg;
 
-use crate::state::{AppState, SortKey, SearchFilter};
+use crate::state::{AppState, SearchFilter, SortKey, ViewTab};
 
 const GB_FACTOR: f64 = 1024.0 * 1024.0 * 1024.0;
 const MIN_SLICE_RATIO: f64 = 0.04;
@@ -70,14 +70,28 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
                 app.navigate_up();
             }
             ui.separator();
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut app.view_tab, ViewTab::Tree, "Tree View");
+                ui.selectable_value(&mut app.view_tab, ViewTab::Files, "File View");
+            });
+            ui.separator();
             if let Some(tree) = app.tree.as_ref() {
-                let search_ctx = app.search_filter.as_ref();
-                let actions = draw_folder_tree(ui, app, tree, search_ctx);
-                apply_folder_actions(app, actions);
+                match app.view_tab {
+                    ViewTab::Tree => {
+                        let filter = app.search_filter.as_ref();
+                        let actions = draw_folder_tree(ui, app, tree, filter);
+                        apply_folder_actions(app, actions);
+                    }
+                    ViewTab::Files => {
+                        let actions = render_file_tab(ui, app, tree);
+                        apply_folder_actions(app, actions);
+                    }
+                }
             } else {
                 ui.label("No folders scanned yet");
             }
         });
+
     egui::CentralPanel::default().show(ctx, |ui| {
         ui.heading("Overview");
         ui.separator();
@@ -98,6 +112,7 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
                 .show_percentage()
                 .text(progress_label),
         );
+
         ui.separator();
 
         if app.current_dir.is_none() {
@@ -116,13 +131,31 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
 
                 let mut children = node.children.clone();
                 if let Some(filter) = app.search_filter.as_ref() {
-                    children.retain(|cid| filter.matches_node(*cid) || filter.matches_subtree(*cid));
+                    children.retain(|cid| {
+                        let child_node = &tree.nodes[cid.0 as usize];
+                        match child_node.kind {
+                            NodeKind::Dir => filter.matches_subtree(*cid),
+                            NodeKind::File => filter.matches_node(*cid),
+                        }
+                    });
                 }
 
                 match app.sort {
-                    SortKey::Size => children.sort_by(|a, b| tree.nodes[b.0 as usize].size.cmp(&tree.nodes[a.0 as usize].size)),
-                    SortKey::Name => children.sort_by(|a, b| tree.nodes[a.0 as usize].name.cmp(&tree.nodes[b.0 as usize].name)),
-                    SortKey::Count => children.sort_by(|a, b| tree.nodes[b.0 as usize].file_count.cmp(&tree.nodes[a.0 as usize].file_count)),
+                    SortKey::Size => children.sort_by(|a, b| {
+                        tree.nodes[b.0 as usize]
+                            .size
+                            .cmp(&tree.nodes[a.0 as usize].size)
+                    }),
+                    SortKey::Name => children.sort_by(|a, b| {
+                        tree.nodes[a.0 as usize]
+                            .name
+                            .cmp(&tree.nodes[b.0 as usize].name)
+                    }),
+                    SortKey::Count => children.sort_by(|a, b| {
+                        tree.nodes[b.0 as usize]
+                            .file_count
+                            .cmp(&tree.nodes[a.0 as usize].file_count)
+                    }),
                 }
 
                 let slices = collect_pie_slices(tree, &children);
@@ -135,8 +168,43 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
             } else {
                 ui.label("No folder selected.");
             }
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Export as:");
+                egui::ComboBox::from_id_source("export_format")
+                    .selected_text(match app.export_format {
+                        ExportFormat::Csv => "CSV",
+                        ExportFormat::Json => "JSON",
+                        ExportFormat::Pdf => "PDF",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut app.export_format, ExportFormat::Csv, "CSV");
+                        ui.selectable_value(&mut app.export_format, ExportFormat::Json, "JSON");
+                        ui.selectable_value(&mut app.export_format, ExportFormat::Pdf, "PDF");
+                    });
+                if ui.button("Export").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name(export_default_name(&app.root, app.export_format))
+                        .save_file()
+                    {
+                        let result = match app.export_format {
+                            ExportFormat::Csv => treesize_core::export::export_csv(tree, &path),
+                            ExportFormat::Json => treesize_core::export::export_json(tree, &path),
+                            ExportFormat::Pdf => treesize_core::export::export_pdf(tree, &path),
+                        };
+                        app.export_status = Some(match result {
+                            Ok(_) => format!("Exported to {}", path.display()),
+                            Err(err) => format!("Export failed: {err}"),
+                        });
+                    }
+                }
+            });
+            if let Some(status) = &app.export_status {
+                ui.label(status);
+            }
         } else {
-            ui.label("Scan a folder to see the overview.");
+            ui.label("Scan a directory to see details.");
         }
     });
 
@@ -144,8 +212,10 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
     show_properties_panel(ctx, app);
 }
 
-
 fn top_bar(ui: &mut Ui, app: &mut AppState) {
+    let previous_sort = app.sort;
+    let mut trigger_search = false;
+
     ui.horizontal(|ui| {
         if ui.button("Choose Folder").clicked() {
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
@@ -158,35 +228,69 @@ fn top_bar(ui: &mut Ui, app: &mut AppState) {
         }
         let paused_now = app.paused.load(Ordering::Relaxed);
         let toggle_label = if paused_now { "Resume" } else { "Pause" };
-        if ui.button(toggle_label).on_hover_text("Pause or resume scanning").clicked() {
+        if ui
+            .button(toggle_label)
+            .on_hover_text("Pause or resume scanning")
+            .clicked()
+        {
             app.pause_or_resume();
         }
         ui.separator();
         ui.label("Sort by:");
         egui::ComboBox::from_label("")
-            .selected_text(match app.sort { SortKey::Size=>"Size", SortKey::Name=>"Name", SortKey::Count=>"Files"})
+            .selected_text(match app.sort {
+                SortKey::Size => "Size",
+                SortKey::Name => "Name",
+                SortKey::Count => "Files",
+            })
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut app.sort, SortKey::Size, "Size");
-                ui.selectable_value(&mut app.sort, SortKey::Name, "Name");
-                ui.selectable_value(&mut app.sort, SortKey::Count, "Files");
+                if ui
+                    .selectable_value(&mut app.sort, SortKey::Size, "Size")
+                    .clicked()
+                {}
+                if ui
+                    .selectable_value(&mut app.sort, SortKey::Name, "Name")
+                    .clicked()
+                {}
+                if ui
+                    .selectable_value(&mut app.sort, SortKey::Count, "Files")
+                    .clicked()
+                {}
             });
         ui.separator();
         ui.label("Search:");
         let resp = ui.text_edit_singleline(&mut app.search);
-        let mut do_search = false;
-        if ui.button("Search").clicked() { do_search = true; }
-        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) { do_search = true; }
-        if do_search {
-            if let Some(tree) = &app.tree {
-                let needle = app.search.trim();
-                if needle.is_empty() {
-                    app.search_filter = None;
-                } else {
-                    app.search_filter = Some(crate::state::SearchFilter::build(needle, tree));
-                }
-            }
+        if ui.button("Search").clicked() {
+            trigger_search = true;
+        }
+        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            trigger_search = true;
         }
     });
+
+    if previous_sort != app.sort {
+        app.sort_file_lists();
+    }
+
+    if trigger_search {
+        app.apply_search();
+        app.export_status = None;
+    }
+}
+
+fn export_default_name(root: &Option<PathBuf>, format: ExportFormat) -> String {
+    let base = root
+        .as_ref()
+        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "treesize_export".to_string());
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+    let ext = match format {
+        ExportFormat::Csv => "csv",
+        ExportFormat::Json => "json",
+        ExportFormat::Pdf => "pdf",
+    };
+    format!("{}_{}.{}", base, timestamp, ext)
 }
 
 fn poll_scan(app: &mut AppState, ctx: &egui::Context) {
@@ -211,6 +315,8 @@ fn poll_scan(app: &mut AppState, ctx: &egui::Context) {
             ScanMsg::DirDone { .. } => {}
             ScanMsg::Done(tree) => {
                 app.tree = Some(tree);
+                app.rebuild_file_cache();
+                app.export_status = None;
                 finished = true;
                 break;
             }
@@ -225,13 +331,26 @@ fn poll_scan(app: &mut AppState, ctx: &egui::Context) {
     }
 }
 
-fn draw_folder_tree(ui: &mut Ui, app: &AppState, tree: &Tree, filter: Option<&SearchFilter>) -> FolderTreeActions {
+fn draw_folder_tree(
+    ui: &mut Ui,
+    app: &AppState,
+    tree: &Tree,
+    filter: Option<&SearchFilter>,
+) -> FolderTreeActions {
     let mut actions = FolderTreeActions::default();
     ScrollArea::vertical()
         .id_source("folder_tree_scroll")
         .auto_shrink([false; 2])
         .show(ui, |ui| {
-            if !render_folder_node(ui, tree, tree.root, app.selected, app.current_dir, app.sort, filter, &mut actions,
+            if !render_folder_node(
+                ui,
+                tree,
+                tree.root,
+                app.selected,
+                app.current_dir,
+                app.sort,
+                filter,
+                &mut actions,
             ) {
                 ui.label("No matches in tree");
             }
@@ -393,6 +512,22 @@ fn render_folder_node_contents(
     true
 }
 
+fn render_file_tab(ui: &mut Ui, app: &AppState, tree: &Tree) -> FolderTreeActions {
+    let mut actions = FolderTreeActions::default();
+    ScrollArea::vertical()
+        .id_source("file_list_scroll")
+        .auto_shrink([false; 2])
+        .show(ui, |ui| {
+            if app.filtered_file_nodes.is_empty() {
+                ui.label("No files to show");
+            } else {
+                for &id in &app.filtered_file_nodes {
+                    render_file_entry(ui, tree, id, app.selected, &mut actions);
+                }
+            }
+        });
+    actions
+}
 fn render_file_entry(
     ui: &mut Ui,
     tree: &Tree,
@@ -782,8 +917,12 @@ fn draw_pie_chart(
                     center.y + radius * 0.6 * mid.sin(),
                 );
                 let name_label = truncate_middle(&slice.name, 28);
-                let label = format!("{}
-{}", name_label, format_gb(slice.bytes));
+                let label = format!(
+                    "{}
+{}",
+                    name_label,
+                    format_gb(slice.bytes)
+                );
                 painter.text(
                     label_pos,
                     Align2::CENTER_CENTER,

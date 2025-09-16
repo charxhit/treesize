@@ -4031,6 +4031,7 @@ name = "treesize-core"
 version = "0.1.0"
 dependencies = [
  "bytesize",
+ "chrono",
  "crossbeam-channel",
  "csv",
  "fuzzy-matcher",

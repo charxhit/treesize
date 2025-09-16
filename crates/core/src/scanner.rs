@@ -76,7 +76,9 @@ impl Scanner {
             let files = files.clone();
             Box::new(move |entry| {
                 while paused_outer.load(Ordering::Relaxed) {
-                    if cancel.load(Ordering::Relaxed) { return WalkState::Quit; }
+                    if cancel.load(Ordering::Relaxed) {
+                        return WalkState::Quit;
+                    }
                     sleep(Duration::from_millis(40));
                 }
                 if cancel.load(Ordering::Relaxed) {
