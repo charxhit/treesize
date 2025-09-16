@@ -236,21 +236,34 @@ fn poll_scan(app: &mut AppState, ctx: &egui::Context) {
     }
 }
 
+fn normalized_search(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn draw_folder_tree(ui: &mut Ui, app: &AppState, tree: &Tree) -> FolderTreeActions {
     let mut actions = FolderTreeActions::default();
     ScrollArea::vertical()
         .id_source("folder_tree_scroll")
         .auto_shrink([false; 2])
         .show(ui, |ui| {
-            render_folder_node(
+            let search_term = normalized_search(&app.search);
+            if !render_folder_node(
                 ui,
                 tree,
                 tree.root,
                 app.selected,
                 app.current_dir,
                 app.sort,
+                search_term.as_deref(),
                 &mut actions,
-            );
+            ) {
+                ui.label("No matches in tree");
+            }
         });
     actions
 }
@@ -262,11 +275,16 @@ fn render_folder_node(
     selected: Option<NodeId>,
     current: Option<NodeId>,
     sort: SortKey,
+    search: Option<&str>,
     actions: &mut FolderTreeActions,
-) {
+) -> bool {
+    let mut rendered = false;
     ui.push_id(node_id.0, |ui| {
-        render_folder_node_contents(ui, tree, node_id, selected, current, sort, actions);
+        rendered = render_folder_node_contents(
+            ui, tree, node_id, selected, current, sort, search, actions,
+        );
     });
+    rendered
 }
 
 fn render_folder_node_contents(
@@ -276,11 +294,40 @@ fn render_folder_node_contents(
     selected: Option<NodeId>,
     current: Option<NodeId>,
     sort: SortKey,
+    search: Option<&str>,
     actions: &mut FolderTreeActions,
-) {
+) -> bool {
     let node = &tree.nodes[node_id.0 as usize];
     if !matches!(node.kind, NodeKind::Dir) {
-        return;
+        return false;
+    }
+
+    let search = search.filter(|s| !s.is_empty());
+    let mut dir_children = Vec::new();
+    let mut file_children = Vec::new();
+    for &child in &node.children {
+        let child_node = &tree.nodes[child.0 as usize];
+        match child_node.kind {
+            NodeKind::Dir => {
+                if search.map_or(true, |needle| directory_matches(tree, child, needle)) {
+                    dir_children.push(child);
+                }
+            }
+            NodeKind::File => {
+                if search.map_or(true, |needle| node_matches(child_node, needle)) {
+                    file_children.push(child);
+                }
+            }
+        }
+    }
+
+    sort_node_ids(&mut dir_children, tree, sort);
+    sort_node_ids(&mut file_children, tree, sort);
+
+    let matches_self = search.map_or(true, |needle| node_matches(node, needle));
+    let has_visible_children = !dir_children.is_empty() || !file_children.is_empty();
+    if search.is_some() && !matches_self && !has_visible_children {
+        return false;
     }
 
     let id = ui.make_persistent_id(("folder_node", node_id.0));
@@ -306,27 +353,15 @@ fn render_folder_node_contents(
         .inner
     });
     let (_toggle, header_inner, _) = header.body(|ui| {
-        let mut dir_children = Vec::new();
-        let mut file_children = Vec::new();
-        for &child in &node.children {
-            let child_node = &tree.nodes[child.0 as usize];
-            match child_node.kind {
-                NodeKind::Dir => dir_children.push(child),
-                NodeKind::File => file_children.push(child),
-            }
+        for &child in &dir_children {
+            render_folder_node(ui, tree, child, selected, current, sort, search, actions);
         }
 
-        sort_node_ids(&mut dir_children, tree, sort);
-        sort_node_ids(&mut file_children, tree, sort);
-
-        for child in dir_children {
-            render_folder_node(ui, tree, child, selected, current, sort, actions);
-        }
-
-        for child in file_children {
+        for &child in &file_children {
             render_file_entry(ui, tree, child, selected, actions);
         }
     });
+
     if delete_clicked {
         actions.select = Some(node_id);
         actions.delete = Some(node_id);
@@ -384,6 +419,8 @@ fn render_folder_node_contents(
             ui.close_menu();
         }
     });
+
+    true
 }
 
 fn render_file_entry(
@@ -613,6 +650,34 @@ fn show_properties_panel(ctx: &egui::Context, app: &mut AppState) {
     if !open {
         app.pending_properties = None;
     }
+}
+
+fn node_matches(node: &TreeNode, needle: &str) -> bool {
+    treesize_core::search::fuzzy_score(needle, &node.name).is_some()
+        || treesize_core::search::fuzzy_score(needle, &node.path.to_string_lossy()).is_some()
+}
+
+fn directory_matches(tree: &Tree, node_id: NodeId, needle: &str) -> bool {
+    let node = &tree.nodes[node_id.0 as usize];
+    if node_matches(node, needle) {
+        return true;
+    }
+    for &child in &node.children {
+        let child_node = &tree.nodes[child.0 as usize];
+        match child_node.kind {
+            NodeKind::Dir => {
+                if directory_matches(tree, child, needle) {
+                    return true;
+                }
+            }
+            NodeKind::File => {
+                if node_matches(child_node, needle) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn collect_pie_slices(tree: &Tree, children: &[NodeId]) -> Vec<PieSlice> {
