@@ -334,12 +334,33 @@ fn render_folder_node_contents(
 
     let response = header_inner.response;
 
-    if let Some(resp) = header_label_response {
-        resp.on_hover_ui(|ui| show_node_metadata(ui, node));
+    if let Some(resp) = &header_label_response {
+        resp.clone().on_hover_ui(|ui| show_node_metadata(ui, node));
+        if resp.clicked() {
+            actions.select = Some(node_id);
+            actions.open = Some(node_id);
+        }
+        resp.context_menu(|ui| {
+            if ui.button("Open").clicked() {
+                actions.select = Some(node_id);
+                actions.open = Some(node_id);
+                ui.close_menu();
+            }
+            if ui.button("Delete").clicked() {
+                actions.select = Some(node_id);
+                actions.delete = Some(node_id);
+                ui.close_menu();
+            }
+            if ui.button("Properties").clicked() {
+                actions.select = Some(node_id);
+                actions.properties = Some(node_id);
+                ui.close_menu();
+            }
+        });
     }
-    response
-        .clone()
-        .on_hover_ui(|ui| show_node_metadata(ui, node));
+
+    let body_hover = response.clone();
+    body_hover.on_hover_ui(|ui| show_node_metadata(ui, node));
 
     if response.clicked() {
         actions.select = Some(node_id);
@@ -755,35 +776,6 @@ fn draw_pie_chart(
 
             start_angle += sweep;
         }
-
-        let hovered_for_menu = hovered_index;
-        response.context_menu(|ui| {
-            if let Some(idx) = hovered_for_menu {
-                if let Some(id) = slices[idx].id {
-                    if ui.button("Open").clicked() {
-                        actions.select = Some(id);
-                        if matches!(slices[idx].kind, NodeKind::Dir) {
-                            actions.open = Some(id);
-                        }
-                        ui.close_menu();
-                    }
-                    if ui.button("Delete").clicked() {
-                        actions.select = Some(id);
-                        actions.delete = Some(id);
-                        ui.close_menu();
-                    }
-                    if ui.button("Properties").clicked() {
-                        actions.select = Some(id);
-                        actions.properties = Some(id);
-                        ui.close_menu();
-                    }
-                } else {
-                    ui.label("No actions available");
-                }
-            } else {
-                ui.label("Hover an item for actions");
-            }
-        });
 
         ui.add_space(12.0);
         ui.vertical(|ui| {
