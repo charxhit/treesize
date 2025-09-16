@@ -3,9 +3,8 @@ use eframe::egui::{
     self, collapsing_header::CollapsingState, Align2, Color32, Id, Pos2, ScrollArea, Sense,
     TextStyle, Ui,
 };
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 use treesize_core::human::human_bytes;
 use treesize_core::model::{NodeId, NodeKind, Tree, TreeNode};
@@ -70,22 +69,15 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
             if ui.button("Up").clicked() {
                 app.navigate_up();
             }
-            if app.selected.is_some() && ui.button("Delete Selected").clicked() {
-                if let Some(id) = app.selected {
-                    app.request_delete(id);
-                }
-            }
             ui.separator();
-            app.update_search_filter_if_due();
             if let Some(tree) = app.tree.as_ref() {
-            let search_ctx = app.search_filter.as_ref();
-            let actions = draw_folder_tree(ui, app, tree, search_ctx);
+                let search_ctx = app.search_filter.as_ref();
+                let actions = draw_folder_tree(ui, app, tree, search_ctx);
                 apply_folder_actions(app, actions);
             } else {
                 ui.label("No folders scanned yet");
             }
         });
-
     egui::CentralPanel::default().show(ctx, |ui| {
         ui.heading("Overview");
         ui.separator();
@@ -106,7 +98,6 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
                 .show_percentage()
                 .text(progress_label),
         );
-
         ui.separator();
 
         if app.current_dir.is_none() {
@@ -124,35 +115,14 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
                 });
 
                 let mut children = node.children.clone();
-                if !app.search.trim().is_empty() {
-                    let needle = app.search.trim();
-                    children.retain(|cid| {
-                        let n = &tree.nodes[cid.0 as usize];
-                        treesize_core::search::fuzzy_score(needle, &n.name).is_some()
-                            || treesize_core::search::fuzzy_score(
-                                needle,
-                                &n.path.display().to_string(),
-                            )
-                            .is_some()
-                    });
+                if let Some(filter) = app.search_filter.as_ref() {
+                    children.retain(|cid| filter.matches_node(*cid) || filter.matches_subtree(*cid));
                 }
 
                 match app.sort {
-                    SortKey::Size => children.sort_by(|a, b| {
-                        tree.nodes[b.0 as usize]
-                            .size
-                            .cmp(&tree.nodes[a.0 as usize].size)
-                    }),
-                    SortKey::Name => children.sort_by(|a, b| {
-                        tree.nodes[a.0 as usize]
-                            .name
-                            .cmp(&tree.nodes[b.0 as usize].name)
-                    }),
-                    SortKey::Count => children.sort_by(|a, b| {
-                        tree.nodes[b.0 as usize]
-                            .file_count
-                            .cmp(&tree.nodes[a.0 as usize].file_count)
-                    }),
+                    SortKey::Size => children.sort_by(|a, b| tree.nodes[b.0 as usize].size.cmp(&tree.nodes[a.0 as usize].size)),
+                    SortKey::Name => children.sort_by(|a, b| tree.nodes[a.0 as usize].name.cmp(&tree.nodes[b.0 as usize].name)),
+                    SortKey::Count => children.sort_by(|a, b| tree.nodes[b.0 as usize].file_count.cmp(&tree.nodes[a.0 as usize].file_count)),
                 }
 
                 let slices = collect_pie_slices(tree, &children);
@@ -162,13 +132,18 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
                     let actions = draw_pie_chart(ui, &slices, app.selected, app.current_dir);
                     apply_pie_actions(app, actions);
                 }
+            } else {
+                ui.label("No folder selected.");
             }
+        } else {
+            ui.label("Scan a folder to see the overview.");
         }
     });
 
     show_delete_confirmation(ctx, app);
     show_properties_panel(ctx, app);
 }
+
 
 fn top_bar(ui: &mut Ui, app: &mut AppState) {
     ui.horizontal(|ui| {
@@ -179,20 +154,17 @@ fn top_bar(ui: &mut Ui, app: &mut AppState) {
         }
         if ui.button("Cancel").clicked() {
             app.cancel_scan();
+            app.reset_to_initial();
         }
-        if app.selected.is_some() && ui.button("Delete Selected").clicked() {
-            if let Some(id) = app.selected {
-                app.request_delete(id);
-            }
+        let paused_now = app.paused.load(Ordering::Relaxed);
+        let toggle_label = if paused_now { "Resume" } else { "Pause" };
+        if ui.button(toggle_label).on_hover_text("Pause or resume scanning").clicked() {
+            app.pause_or_resume();
         }
         ui.separator();
         ui.label("Sort by:");
         egui::ComboBox::from_label("")
-            .selected_text(match app.sort {
-                SortKey::Size => "Size",
-                SortKey::Name => "Name",
-                SortKey::Count => "Files",
-            })
+            .selected_text(match app.sort { SortKey::Size=>"Size", SortKey::Name=>"Name", SortKey::Count=>"Files"})
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut app.sort, SortKey::Size, "Size");
                 ui.selectable_value(&mut app.sort, SortKey::Name, "Name");
@@ -200,7 +172,20 @@ fn top_bar(ui: &mut Ui, app: &mut AppState) {
             });
         ui.separator();
         ui.label("Search:");
-        ui.text_edit_singleline(&mut app.search);
+        let resp = ui.text_edit_singleline(&mut app.search);
+        let mut do_search = false;
+        if ui.button("Search").clicked() { do_search = true; }
+        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) { do_search = true; }
+        if do_search {
+            if let Some(tree) = &app.tree {
+                let needle = app.search.trim();
+                if needle.is_empty() {
+                    app.search_filter = None;
+                } else {
+                    app.search_filter = Some(crate::state::SearchFilter::build(needle, tree));
+                }
+            }
+        }
     });
 }
 
@@ -634,51 +619,6 @@ fn show_properties_panel(ctx: &egui::Context, app: &mut AppState) {
 
     if !open {
         app.pending_properties = None;
-    }
-}
-
-fn node_matches(node: &TreeNode, needle: &str) -> bool {
-    treesize_core::search::fuzzy_score(needle, &node.name).is_some()
-        || treesize_core::search::fuzzy_score(needle, &node.path.to_string_lossy()).is_some()
-}
-
-
-
-
-struct SearchContext {
-    needle: String,
-    cache: RefCell<HashMap<u64, bool>>,
-}
-
-impl SearchContext {
-    fn new(input: &str) -> Option<Self> {
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(Self { needle: trimmed.to_string(), cache: RefCell::new(HashMap::new()) })
-        }
-    }
-
-    fn matches_node(&self, node: &TreeNode) -> bool {
-        node_matches(node, &self.needle)
-    }
-
-    fn matches_dir(&self, tree: &Tree, node_id: NodeId) -> bool {
-        if let Some(&cached) = self.cache.borrow().get(&node_id.0) {
-            return cached;
-        }
-        let node = &tree.nodes[node_id.0 as usize];
-        let result = self.matches_node(node)
-            || node.children.iter().any(|child| {
-                let child_node = &tree.nodes[child.0 as usize];
-                match child_node.kind {
-                    NodeKind::Dir => self.matches_dir(tree, *child),
-                    NodeKind::File => self.matches_node(child_node),
-                }
-            });
-        self.cache.borrow_mut().insert(node_id.0, result);
-        result
     }
 }
 

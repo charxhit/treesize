@@ -2,7 +2,6 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use treesize_core::model::{NodeId, Tree};
 use treesize_core::scanner::{ScanMsg, Scanner};
 
@@ -14,8 +13,6 @@ pub enum SortKey {
 }
 
 pub struct SearchFilter {
-    pub needle: String,
-    pub node_count: usize,
     pub direct_matches: Vec<bool>,
     pub subtree_matches: Vec<bool>,
 }
@@ -63,7 +60,7 @@ impl SearchFilter {
             dfs(tree, &direct, &mut subtree, tree.root);
         }
 
-        SearchFilter { needle: needle.to_string(), node_count: n, direct_matches: direct, subtree_matches: subtree }
+        SearchFilter { direct_matches: direct, subtree_matches: subtree }
     }
 }
 
@@ -83,9 +80,6 @@ pub struct AppState {
     pub pending_delete: Option<NodeId>,
     pub pending_properties: Option<NodeId>,
     pub search_filter: Option<SearchFilter>,
-    // Debounce + identity tracking for search filter rebuilds
-    last_search_built: Option<String>,
-    search_ready_at: Option<Instant>,
 }
 
 impl AppState {
@@ -106,8 +100,7 @@ impl AppState {
             pending_delete: None,
             pending_properties: None,
             search_filter: None,
-            last_search_built: None,
-            search_ready_at: None,
+
         }
     }
 
@@ -122,8 +115,6 @@ impl AppState {
         self.pending_delete = None;
         self.pending_properties = None;
         self.search_filter = None;
-        self.last_search_built = None;
-        self.search_ready_at = None;
         self.cancel.store(false, Ordering::Relaxed);
         self.paused.store(false, Ordering::Relaxed);
 
@@ -154,8 +145,6 @@ impl AppState {
         self.progress_discovered = 0;
         self.progress_files = 0;
         self.search_filter = None;
-        self.last_search_built = None;
-        self.search_ready_at = None;
     }
 
 
@@ -193,33 +182,9 @@ impl AppState {
             if let Some(root) = &self.root { self.start_scan(root.clone()); }
         }
     }
-
-    /// Notify that the search input changed; starts a short debounce window.
-    pub fn on_search_changed(&mut self) {
-        self.search_ready_at = Some(Instant::now() + Duration::from_millis(120));
-        // Invalidate identity so we rebuild once due
-        self.last_search_built = None;
-    }
-
-    /// Rebuild the cached search filter if due and inputs changed.
-    pub fn update_search_filter_if_due(&mut self) {
-        let Some(tree) = &self.tree else { self.search_filter = None; return; };
-        let needle = self.search.trim();
-        if needle.is_empty() {
-            self.search_filter = None;
-            self.last_search_built = None;
-            return;
-        }
-        if let Some(ready) = self.search_ready_at {
-            if Instant::now() < ready { return; }
-        }
-        if self.last_search_built.as_deref() == Some(needle)
-            && self.search_filter.as_ref().is_some_and(|f| f.node_count == tree.nodes.len())
-        {
-            return;
-        }
-        let filter = SearchFilter::build(needle, tree);
-        self.last_search_built = Some(needle.to_string());
-        self.search_filter = Some(filter);
-    }
 }
+
+
+
+
+
