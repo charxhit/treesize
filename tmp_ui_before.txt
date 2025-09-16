@@ -76,10 +76,7 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
                 }
             }
             ui.separator();
-            app.update_search_filter_if_due();
-            if let Some(tree) = app.tree.as_ref() {
-            let search_ctx = app.search_filter.as_ref();
-            let actions = draw_folder_tree(ui, app, tree, search_ctx);
+            if let Some(tree) = app.tree.as_ref() {`r`n            let search_ctx = make_search_filter(app, tree, None);\n            let actions = draw_folder_tree(ui, app, tree, search_ctx);
                 apply_folder_actions(app, actions);
             } else {
                 ui.label("No folders scanned yet");
@@ -240,13 +237,40 @@ fn poll_scan(app: &mut AppState, ctx: &egui::Context) {
     }
 }
 
+fn make_search_filter(app: &AppState, tree: &Tree, prev: Option<&SearchFilter>) -> Option<SearchFilter> {
+    let needle = app.search.trim();
+    if needle.is_empty() { return None; }
+    if let Some(f) = prev {
+        if f.needle == needle && f.node_count == tree.nodes.len() { return; }
+    }
+    let n = tree.nodes.len();
+    let mut direct = vec![false; n];
+    for (i, node) in tree.nodes.iter().enumerate() {
+        direct[i] = node_matches(node, needle);
+    }
+    let mut subtree = direct.clone();
+    for i in (0..n).rev() {
+        if matches!(tree.nodes[i].kind, NodeKind::Dir) {
+            let mut any_child = false;
+            for &child in &tree.nodes[i].children { if subtree[child.0 as usize] { any_child = true; break; } }
+            if any_child { subtree[i] = true; }
+        }
+    }
+    return Some(crate::state::SearchFilter {
+        needle: needle.to_string(),
+        node_count: n,
+        direct_matches: direct,
+        subtree_matches: subtree,
+    });\n}
 fn draw_folder_tree(ui: &mut Ui, app: &AppState, tree: &Tree, filter: Option<&SearchFilter>) -> FolderTreeActions {
     let mut actions = FolderTreeActions::default();
     ScrollArea::vertical()
         .id_source("folder_tree_scroll")
         .auto_shrink([false; 2])
         .show(ui, |ui| {
-            if !render_folder_node(ui, tree, tree.root, app.selected, app.current_dir, app.sort, filter, &mut actions,
+            let search_ctx = app.search_filter.as_ref();
+            if !render_folder_node(ui, tree, tree.root, app.selected, app.current_dir, app.sort, filter, search_ctx,
+                &mut actions,
             ) {
                 ui.label("No matches in tree");
             }
@@ -261,9 +285,7 @@ fn render_folder_node(
     selected: Option<NodeId>,
     current: Option<NodeId>,
     sort: SortKey,
-    search: Option<&SearchFilter>,
-    actions: &mut FolderTreeActions,
-) -> bool {
+    search: Option<&SearchFilter>,\n    actions: &mut FolderTreeActions,\n) -> bool {
     let mut rendered = false;
     ui.push_id(node_id.0, |ui| {
         rendered = render_folder_node_contents(
@@ -280,9 +302,7 @@ fn render_folder_node_contents(
     selected: Option<NodeId>,
     current: Option<NodeId>,
     sort: SortKey,
-    search: Option<&SearchFilter>,
-    actions: &mut FolderTreeActions,
-) -> bool {
+    search: Option<&SearchFilter>,\n    actions: &mut FolderTreeActions,\n) -> bool {
     let node = &tree.nodes[node_id.0 as usize];
     if !matches!(node.kind, NodeKind::Dir) {
         return false;
@@ -995,3 +1015,4 @@ fn apply_folder_actions(app: &mut AppState, actions: FolderTreeActions) {
         app.request_properties(id);
     }
 }
+

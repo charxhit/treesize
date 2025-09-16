@@ -10,6 +10,8 @@ use std::{
 };
 
 use crate::model::*;
+use std::thread::sleep;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub enum ScanMsg {
@@ -34,18 +36,19 @@ pub enum ScanMsg {
 
 pub struct Scanner {
     cancel: Arc<AtomicBool>,
-    // Optional: paused flag, etc.
+    paused: Arc<AtomicBool>,
 }
 
 impl Scanner {
-    pub fn new(cancel: Arc<AtomicBool>) -> Self {
-        Self { cancel }
+    pub fn new(cancel: Arc<AtomicBool>, paused: Arc<AtomicBool>) -> Self {
+        Self { cancel, paused }
     }
 
     pub fn scan(&self, root: PathBuf, tx: Sender<ScanMsg>) {
         use parking_lot::Mutex;
 
         let cancel = self.cancel.clone();
+        let paused = self.paused.clone();
 
         // Shared progress counters
         let discovered = Arc::new(AtomicU64::new(0));
@@ -64,6 +67,7 @@ impl Scanner {
 
         let walker = builder.build_parallel();
         walker.run(|| {
+            let paused_outer = paused.clone();
             let cancel = cancel.clone();
             let tx = tx.clone();
             let discovered = discovered.clone();
@@ -71,6 +75,10 @@ impl Scanner {
             let bytes = bytes.clone();
             let files = files.clone();
             Box::new(move |entry| {
+                while paused_outer.load(Ordering::Relaxed) {
+                    if cancel.load(Ordering::Relaxed) { return WalkState::Quit; }
+                    sleep(Duration::from_millis(40));
+                }
                 if cancel.load(Ordering::Relaxed) {
                     return WalkState::Quit;
                 }
