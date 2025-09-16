@@ -431,7 +431,10 @@ fn show_node_metadata(ui: &mut Ui, node: &TreeNode) {
     if matches!(node.kind, NodeKind::Dir) {
         ui.label(format!("Files: {}", node.file_count));
     }
-    ui.label(format!("Modified: {}", format_modified(node.modified)));
+    ui.label(format!(
+        "Modified: {}",
+        format_modified(node.modified, Some(&node.path))
+    ));
 }
 
 fn show_slice_metadata(ui: &mut Ui, slice: &PieSlice) {
@@ -443,7 +446,10 @@ fn show_slice_metadata(ui: &mut Ui, slice: &PieSlice) {
             if matches!(slice.kind, NodeKind::Dir) {
                 ui.label(format!("Files: {}", slice.file_count));
             }
-            ui.label(format!("Modified: {}", format_modified(slice.modified)));
+            ui.label(format!(
+                "Modified: {}",
+                format_modified(slice.modified, Some(&slice.path))
+            ));
         }
         None => {
             ui.label("Aggregated from remaining items");
@@ -454,13 +460,13 @@ fn show_slice_metadata(ui: &mut Ui, slice: &PieSlice) {
     }
 }
 
-fn format_modified(modified: Option<SystemTime>) -> String {
-    match modified {
-        Some(time) => {
-            let datetime: DateTime<Local> = time.into();
-            datetime.format("%Y-%m-%d %H:%M:%S").to_string()
-        }
-        None => "Unknown".to_string(),
+fn format_modified(modified: Option<SystemTime>, path: Option<&std::path::Path>) -> String {
+    let time = modified.or_else(|| path.and_then(|p| std::fs::metadata(p).ok()?.modified().ok()));
+    if let Some(time) = time {
+        let datetime = DateTime::<Local>::from(time);
+        datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+    } else {
+        "Unknown".to_string()
     }
 }
 
@@ -750,12 +756,17 @@ fn draw_pie_chart(
                 color = lighten(color, 20);
             }
 
-            let points = wedge_points(center, radius, start_angle, sweep);
-            painter.add(egui::Shape::convex_polygon(
-                points,
-                color,
-                egui::Stroke::new(1.0, Color32::BLACK),
-            ));
+            if sweep >= tau - 0.001 {
+                painter.circle_filled(center, radius, color);
+                painter.circle_stroke(center, radius, egui::Stroke::new(1.0, Color32::BLACK));
+            } else {
+                let points = wedge_points(center, radius, start_angle, sweep);
+                painter.add(egui::Shape::convex_polygon(
+                    points,
+                    color,
+                    egui::Stroke::new(1.0, Color32::BLACK),
+                ));
+            }
 
             if sweep > 0.1 {
                 let mid = start_angle + sweep / 2.0;
