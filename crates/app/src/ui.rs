@@ -1,9 +1,12 @@
+use chrono::{DateTime, Local};
 use eframe::egui::{
-    self, collapsing_header::CollapsingState, Align2, Color32, Pos2, ScrollArea, Sense, TextStyle,
-    Ui,
+    self, collapsing_header::CollapsingState, Align2, Color32, Id, Pos2, ScrollArea, Sense,
+    TextStyle, Ui,
 };
+use std::path::PathBuf;
+use std::time::SystemTime;
 use treesize_core::human::human_bytes;
-use treesize_core::model::{NodeId, NodeKind, Tree};
+use treesize_core::model::{NodeId, NodeKind, Tree, TreeNode};
 use treesize_core::scanner::ScanMsg;
 
 use crate::state::{AppState, SortKey};
@@ -17,6 +20,7 @@ struct FolderTreeActions {
     select: Option<NodeId>,
     open: Option<NodeId>,
     delete: Option<NodeId>,
+    properties: Option<NodeId>,
 }
 
 #[derive(Default)]
@@ -24,6 +28,7 @@ struct PieActions {
     select: Option<NodeId>,
     open: Option<NodeId>,
     delete: Option<NodeId>,
+    properties: Option<NodeId>,
 }
 
 struct PieSlice {
@@ -33,6 +38,9 @@ struct PieSlice {
     bytes: u128,
     ratio: f64,
     color: Color32,
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    file_count: u64,
 }
 
 pub fn draw(app: &mut AppState, ctx: &egui::Context) {
@@ -155,6 +163,7 @@ pub fn draw(app: &mut AppState, ctx: &egui::Context) {
     });
 
     show_delete_confirmation(ctx, app);
+    show_properties_panel(ctx, app);
 }
 
 fn top_bar(ui: &mut Ui, app: &mut AppState) {
@@ -278,10 +287,12 @@ fn render_folder_node_contents(
     let state = CollapsingState::load_with_default_open(ui.ctx(), id, node.parent.is_none());
     let is_selected = selected == Some(node_id) || current == Some(node_id);
     let mut delete_clicked = false;
+    let mut header_label_response = None;
     let label_text = format!("{} ({})", node.name, human_bytes(node.size));
     let header = state.show_header(ui, |ui| {
         ui.horizontal(|ui| {
             let response = ui.selectable_label(is_selected, label_text.clone());
+            header_label_response = Some(response.clone());
             ui.add_space(6.0);
             if ui
                 .small_button("Del")
@@ -323,6 +334,13 @@ fn render_folder_node_contents(
 
     let response = header_inner.response;
 
+    if let Some(resp) = header_label_response {
+        resp.on_hover_ui(|ui| show_node_metadata(ui, node));
+    }
+    response
+        .clone()
+        .on_hover_ui(|ui| show_node_metadata(ui, node));
+
     if response.clicked() {
         actions.select = Some(node_id);
         actions.open = Some(node_id);
@@ -339,6 +357,11 @@ fn render_folder_node_contents(
             actions.delete = Some(node_id);
             ui.close_menu();
         }
+        if ui.button("Properties").clicked() {
+            actions.select = Some(node_id);
+            actions.properties = Some(node_id);
+            ui.close_menu();
+        }
     });
 }
 
@@ -352,18 +375,89 @@ fn render_file_entry(
     let node = &tree.nodes[node_id.0 as usize];
     let label = format!("{} ({})", node.name, human_bytes(node.size));
     let response = ui.selectable_label(selected == Some(node_id), label);
+    let hover_response = response.clone();
+    hover_response.on_hover_ui(|ui| show_node_metadata(ui, node));
 
     if response.clicked() {
         actions.select = Some(node_id);
     }
 
     response.context_menu(|ui| {
+        if ui.button("Open").clicked() {
+            let _ = open::that(&node.path);
+            ui.close_menu();
+        }
         if ui.button("Delete").clicked() {
             actions.select = Some(node_id);
             actions.delete = Some(node_id);
             ui.close_menu();
         }
+        if ui.button("Properties").clicked() {
+            actions.select = Some(node_id);
+            actions.properties = Some(node_id);
+            ui.close_menu();
+        }
     });
+}
+
+fn show_node_metadata(ui: &mut Ui, node: &TreeNode) {
+    ui.label(format!("Path: {}", node.path.display()));
+    ui.label(match node.kind {
+        NodeKind::Dir => format!("Kind: Directory"),
+        NodeKind::File => format!("Kind: File"),
+    });
+    ui.label(format!("Size: {}", human_bytes(node.size)));
+    if matches!(node.kind, NodeKind::Dir) {
+        ui.label(format!("Files: {}", node.file_count));
+    }
+    ui.label(format!("Modified: {}", format_modified(node.modified)));
+}
+
+fn show_slice_metadata(ui: &mut Ui, slice: &PieSlice) {
+    ui.label(format!("Name: {}", slice.name));
+    ui.label(format!("Size: {}", human_bytes(slice.bytes)));
+    match slice.id {
+        Some(_) => {
+            ui.label(format!("Path: {}", slice.path.display()));
+            if matches!(slice.kind, NodeKind::Dir) {
+                ui.label(format!("Files: {}", slice.file_count));
+            }
+            ui.label(format!("Modified: {}", format_modified(slice.modified)));
+        }
+        None => {
+            ui.label("Aggregated from remaining items");
+            if slice.file_count > 0 {
+                ui.label(format!("Combined files: {}", slice.file_count));
+            }
+        }
+    }
+}
+
+fn format_modified(modified: Option<SystemTime>) -> String {
+    match modified {
+        Some(time) => {
+            let datetime: DateTime<Local> = time.into();
+            datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+        }
+        None => "Unknown".to_string(),
+    }
+}
+
+fn truncate_middle(value: &str, max_len: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_len {
+        return value.to_string();
+    }
+    if max_len <= 3 {
+        return value.chars().take(max_len).collect();
+    }
+    let chars: Vec<char> = value.chars().collect();
+    let keep = max_len - 3;
+    let first = keep / 2;
+    let second = keep - first;
+    let start: String = chars[..first].iter().collect();
+    let end: String = chars[char_count - second..].iter().collect();
+    format!("{}...{}", start, end)
 }
 
 fn sort_node_ids(nodes: &mut Vec<NodeId>, tree: &Tree, sort: SortKey) {
@@ -456,6 +550,44 @@ fn show_delete_confirmation(ctx: &egui::Context, app: &mut AppState) {
     }
 }
 
+fn show_properties_panel(ctx: &egui::Context, app: &mut AppState) {
+    let properties_id = match app.pending_properties {
+        Some(id) => id,
+        None => return,
+    };
+
+    let Some(tree) = app.tree.as_ref() else {
+        app.pending_properties = None;
+        return;
+    };
+    let Some(node) = tree.nodes.get(properties_id.0 as usize) else {
+        app.pending_properties = None;
+        return;
+    };
+
+    let mut open = true;
+    egui::Window::new("Properties")
+        .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.heading(&node.name);
+            show_node_metadata(ui, node);
+            if matches!(node.kind, NodeKind::Dir) {
+                ui.label(format!("Contains: {} files", node.file_count));
+            }
+            ui.separator();
+            if ui.button("Open Externally").clicked() {
+                let _ = open::that(&node.path);
+            }
+        });
+
+    if !open {
+        app.pending_properties = None;
+    }
+}
+
 fn collect_pie_slices(tree: &Tree, children: &[NodeId]) -> Vec<PieSlice> {
     let mut items: Vec<_> = children
         .iter()
@@ -480,9 +612,15 @@ fn collect_pie_slices(tree: &Tree, children: &[NodeId]) -> Vec<PieSlice> {
     let mut slices = Vec::new();
     let mut other_bytes: u128 = 0;
     let mut other_ratio = 0.0;
+    let mut other_files: u64 = 0;
 
     for (index, (id, node)) in items.iter().enumerate() {
         let ratio = node.size as f64 / total;
+        let file_count = if matches!(node.kind, NodeKind::Dir) {
+            node.file_count
+        } else {
+            node.file_count.max(1)
+        };
         if slices.len() < MAX_PRIMARY_SLICES
             && (index < MAX_PRIMARY_SLICES || ratio >= MIN_SLICE_RATIO)
         {
@@ -494,10 +632,14 @@ fn collect_pie_slices(tree: &Tree, children: &[NodeId]) -> Vec<PieSlice> {
                 bytes: node.size,
                 ratio,
                 color,
+                path: node.path.clone(),
+                modified: node.modified,
+                file_count,
             });
         } else {
             other_bytes += node.size;
             other_ratio += ratio;
+            other_files += file_count;
         }
     }
 
@@ -509,6 +651,9 @@ fn collect_pie_slices(tree: &Tree, children: &[NodeId]) -> Vec<PieSlice> {
             bytes: other_bytes,
             ratio: other_ratio,
             color: Color32::from_gray(110),
+            path: PathBuf::new(),
+            modified: None,
+            file_count: other_files,
         });
     }
 
@@ -524,6 +669,7 @@ fn draw_pie_chart(
     let mut actions = PieActions::default();
 
     let legend_width = 220.0;
+    let tooltip_id = Id::new("pie_slice_tooltip");
     ui.horizontal(|ui| {
         let available_width = ui.available_width();
         let available_height = ui.available_height();
@@ -562,6 +708,12 @@ fn draw_pie_chart(
             }
         }
 
+        if let Some(idx) = hovered_index {
+            egui::show_tooltip(ui.ctx(), ui.layer_id(), tooltip_id, |ui| {
+                show_slice_metadata(ui, &slices[idx]);
+            });
+        }
+
         let mut start_angle = 0.0f32;
         for (index, slice) in slices.iter().enumerate() {
             let sweep = (slice.ratio as f32).max(0.0) * tau;
@@ -590,7 +742,8 @@ fn draw_pie_chart(
                     center.x + radius * 0.6 * mid.cos(),
                     center.y + radius * 0.6 * mid.sin(),
                 );
-                let label = format!("{}\n{}", slice.name, format_gb(slice.bytes));
+                let name_label = truncate_middle(&slice.name, 28);
+                let label = format!("{}\n{}", name_label, format_gb(slice.bytes));
                 painter.text(
                     label_pos,
                     Align2::CENTER_CENTER,
@@ -617,6 +770,11 @@ fn draw_pie_chart(
                     if ui.button("Delete").clicked() {
                         actions.select = Some(id);
                         actions.delete = Some(id);
+                        ui.close_menu();
+                    }
+                    if ui.button("Properties").clicked() {
+                        actions.select = Some(id);
+                        actions.properties = Some(id);
                         ui.close_menu();
                     }
                 } else {
@@ -747,6 +905,9 @@ fn apply_pie_actions(app: &mut AppState, actions: PieActions) {
     if let Some(id) = actions.delete {
         app.request_delete(id);
     }
+    if let Some(id) = actions.properties {
+        app.request_properties(id);
+    }
 }
 
 fn apply_folder_actions(app: &mut AppState, actions: FolderTreeActions) {
@@ -758,5 +919,8 @@ fn apply_folder_actions(app: &mut AppState, actions: FolderTreeActions) {
     }
     if let Some(id) = actions.delete {
         app.request_delete(id);
+    }
+    if let Some(id) = actions.properties {
+        app.request_properties(id);
     }
 }

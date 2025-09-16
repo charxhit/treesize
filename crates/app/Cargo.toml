@@ -15,3 +15,4 @@ parking_lot = "0.12"
 rfd = "0.14"
 
 treesize-core = { path = "../core" }
+chrono = { version = "0.4", features = ["clock"] }

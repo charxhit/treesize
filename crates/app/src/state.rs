@@ -25,6 +25,7 @@ pub struct AppState {
     pub current_dir: Option<NodeId>,
     pub selected: Option<NodeId>,
     pub pending_delete: Option<NodeId>,
+    pub pending_properties: Option<NodeId>,
 }
 
 impl AppState {
@@ -42,6 +43,7 @@ impl AppState {
             current_dir: None,
             selected: None,
             pending_delete: None,
+            pending_properties: None,
         }
     }
 
@@ -54,6 +56,7 @@ impl AppState {
         self.current_dir = None;
         self.selected = None;
         self.pending_delete = None;
+        self.pending_properties = None;
         self.cancel.store(false, Ordering::Relaxed);
 
         let (tx, rx): (Sender<ScanMsg>, Receiver<ScanMsg>) = unbounded();
@@ -88,6 +91,13 @@ impl AppState {
     pub fn request_delete(&mut self, id: NodeId) {
         self.selected = Some(id);
         self.pending_delete = Some(id);
+        self.pending_properties = None;
+    }
+
+    pub fn request_properties(&mut self, id: NodeId) {
+        self.selected = Some(id);
+        self.pending_properties = Some(id);
+        self.pending_delete = None;
     }
 
     pub fn delete_selected_and_rescan(&mut self) {
